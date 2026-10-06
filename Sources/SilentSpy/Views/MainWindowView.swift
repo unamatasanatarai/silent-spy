@@ -93,23 +93,27 @@ public struct MainWindowView: View {
             
             // Error Banner if present
             if let error = manager.errorMessage {
-                HStack(spacing: 6) {
+                HStack(spacing: 5) {
                     Image(systemName: "exclamationmark.octagon.fill")
+                        .font(.system(size: 10))
                         .foregroundColor(redColor)
                     Text(error)
-                        .font(.system(size: 11, weight: .medium))
+                        .font(.system(size: 9.5, weight: .medium))
                         .foregroundColor(redColor)
                         .lineLimit(2)
-                    Spacer()
+                        .minimumScaleFactor(0.85)
+                    Spacer(minLength: 2)
                     Button(action: { manager.errorMessage = nil }) {
                         Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 10))
                             .foregroundColor(.white.opacity(0.6))
                     }
                     .buttonStyle(.plain)
                     .focusable(false)
-                    .focusEffectDisabled()
+                    .suppressFocusEffect()
                 }
-                .padding(8.5)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 6)
                 .background(
                     RoundedRectangle(cornerRadius: 13, style: .continuous)
                         .fill(redColor.opacity(0.15))
@@ -118,6 +122,7 @@ public struct MainWindowView: View {
                                 .stroke(redColor.opacity(0.35), lineWidth: 0.8)
                         )
                 )
+                .help(error)
                 .zIndex(20)
             }
             
@@ -162,7 +167,7 @@ public struct MainWindowView: View {
             }
             .buttonStyle(.plain)
             .focusable(false)
-            .focusEffectDisabled()
+            .suppressFocusEffect()
             .help(manager.isRecording ? "Stop Recording" : "Start Recording")
             .frame(maxWidth: .infinity)
             .padding(.top, 1)
@@ -233,7 +238,7 @@ public struct MainWindowView: View {
                 }
                 .buttonStyle(.plain)
                 .focusable(false)
-                .focusEffectDisabled()
+                .suppressFocusEffect()
                 .help("Hide HUD (Open from Menu Bar)")
                 .onHover { hovering in
                     isCloseHovered = hovering
@@ -269,7 +274,7 @@ public struct MainWindowView: View {
                     }
                     .buttonStyle(.plain)
                     .focusable(false)
-                    .focusEffectDisabled()
+                    .suppressFocusEffect()
                     .help(isFolderHovered ? "Open Storage Folder in Finder" : "Storage Folder: \(manager.storageDirectoryURL.path)")
                     .onHover { h in
                         isTopFolderHovered = h
@@ -300,7 +305,7 @@ public struct MainWindowView: View {
                         }
                         .buttonStyle(.plain)
                         .focusable(false)
-                        .focusEffectDisabled()
+                        .suppressFocusEffect()
                         .help("Change Storage Folder...")
                         .onHover { h in
                             isEditFolderHovered = h
@@ -390,7 +395,7 @@ public struct MainWindowView: View {
                 }
                 .buttonStyle(.plain)
                 .focusable(false)
-                .focusEffectDisabled()
+                .suppressFocusEffect()
                 .help("Grant Microphone Permission")
                 .onHover { h in
                     withAnimation(.easeInOut(duration: 0.15)) {
@@ -414,7 +419,7 @@ public struct MainWindowView: View {
                 }
                 .buttonStyle(.plain)
                 .focusable(false)
-                .focusEffectDisabled()
+                .suppressFocusEffect()
                 .help("Grant System Audio Permission")
                 .onHover { h in
                     withAnimation(.easeInOut(duration: 0.15)) {
@@ -438,7 +443,7 @@ public struct MainWindowView: View {
                 }
                 .buttonStyle(.plain)
                 .focusable(false)
-                .focusEffectDisabled()
+                .suppressFocusEffect()
                 .help("Select Storage Folder")
                 .onHover { h in
                     withAnimation(.easeInOut(duration: 0.15)) {
@@ -451,4 +456,17 @@ public struct MainWindowView: View {
     }
 }
 
-
+private extension View {
+    @ViewBuilder
+    func suppressFocusEffect() -> some View {
+        #if compiler(>=5.9)
+        if #available(macOS 14.0, *) {
+            self.focusEffectDisabled()
+        } else {
+            self
+        }
+        #else
+        self
+        #endif
+    }
+}

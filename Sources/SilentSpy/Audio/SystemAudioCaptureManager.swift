@@ -9,8 +9,10 @@ public protocol SystemAudioCaptureDelegate: AnyObject {
     func systemAudioCaptureDidFail(with error: Error)
 }
 
-public final class SystemAudioCaptureManager: NSObject, SCStreamDelegate, SCStreamOutput {
+@available(macOS 12.3, *)
+public final class SystemAudioCaptureManager: NSObject, SCStreamDelegate, SCStreamOutput, AVCaptureAudioDataOutputSampleBufferDelegate {
     private var stream: SCStream?
+    private var fallbackMicSession: AVCaptureSession?
     private let sampleQueue = DispatchQueue(label: "com.silentspy.systemaudio", qos: .userInteractive)
     
     public weak var delegate: SystemAudioCaptureDelegate?
@@ -27,44 +29,105 @@ public final class SystemAudioCaptureManager: NSObject, SCStreamDelegate, SCStre
     public func startCapture() async throws {
         guard !isRunning else { return }
         
-        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
-        guard let display = content.displays.first else {
-            throw NSError(domain: "SilentSpy.SystemAudio", code: 1, userInfo: [NSLocalizedDescriptionKey: "No active display found for audio capture."])
+        if #available(macOS 13.0, *) {
+            let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
+            guard let display = content.displays.first else {
+                throw NSError(domain: "SilentSpy.SystemAudio", code: 1, userInfo: [NSLocalizedDescriptionKey: "No active display found for audio capture."])
+            }
+            
+            let filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
+            
+            let config = SCStreamConfiguration()
+            config.capturesAudio = true
+            config.excludesCurrentProcessAudio = true
+            config.sampleRate = Int(AudioConfig.sampleRate)
+            config.channelCount = 2
+            
+            // Minimize video capture overhead
+            config.width = 2
+            config.height = 2
+            config.minimumFrameInterval = CMTime(value: 1, timescale: 1)
+            config.showsCursor = false
+            
+            let newStream = SCStream(filter: filter, configuration: config, delegate: self)
+            try newStream.addStreamOutput(self, type: .audio, sampleHandlerQueue: sampleQueue)
+            
+            try await newStream.startCapture()
+            self.stream = newStream
+            self.isRunning = true
+        } else {
+            // macOS 12 Fallback: Check for Virtual Audio Loopback Device (BlackHole, Soundflower, Loopback, etc.)
+            let session = AVCaptureDevice.DiscoverySession(
+                deviceTypes: [.builtInMicrophone, .externalUnknown],
+                mediaType: .audio,
+                position: .unspecified
+            )
+            let virtualDevice = session.devices.first { device in
+                let name = device.localizedName.lowercased()
+                return name.contains("blackhole") || name.contains("soundflower") || name.contains("loopback") || name.contains("vb-cable")
+            }
+            
+            if let device = virtualDevice {
+                let captureSession = AVCaptureSession()
+                let input = try AVCaptureDeviceInput(device: device)
+                guard captureSession.canAddInput(input) else {
+                    throw NSError(domain: "SilentSpy.SystemAudio", code: 2, userInfo: [NSLocalizedDescriptionKey: "Cannot add virtual audio input to capture session."])
+                }
+                captureSession.addInput(input)
+                
+                let output = AVCaptureAudioDataOutput()
+                output.setSampleBufferDelegate(self, queue: sampleQueue)
+                guard captureSession.canAddOutput(output) else {
+                    throw NSError(domain: "SilentSpy.SystemAudio", code: 3, userInfo: [NSLocalizedDescriptionKey: "Cannot add virtual audio output to capture session."])
+                }
+                captureSession.addOutput(output)
+                captureSession.startRunning()
+                
+                self.fallbackMicSession = captureSession
+                self.isRunning = true
+            } else {
+                throw NSError(
+                    domain: "SilentSpy.SystemAudio",
+                    code: 4,
+                    userInfo: [NSLocalizedDescriptionKey: "System audio requires macOS 13+ or BlackHole 2ch driver."]
+                )
+            }
         }
-        
-        let filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
-        
-        let config = SCStreamConfiguration()
-        config.capturesAudio = true
-        config.excludesCurrentProcessAudio = true
-        config.sampleRate = Int(AudioConfig.sampleRate)
-        config.channelCount = 2
-        
-        // Minimize video capture overhead
-        config.width = 2
-        config.height = 2
-        config.minimumFrameInterval = CMTime(value: 1, timescale: 1)
-        config.showsCursor = false
-        
-        let newStream = SCStream(filter: filter, configuration: config, delegate: self)
-        try newStream.addStreamOutput(self, type: .audio, sampleHandlerQueue: sampleQueue)
-        
-        try await newStream.startCapture()
-        self.stream = newStream
-        self.isRunning = true
     }
     
     public func stopCapture() async {
-        guard isRunning, let stream = self.stream else { return }
-        try? await stream.stopCapture()
-        self.stream = nil
+        guard isRunning else { return }
+        if let stream = self.stream {
+            if #available(macOS 13.0, *) {
+                try? await stream.stopCapture()
+            }
+            self.stream = nil
+        }
+        if let fallback = self.fallbackMicSession {
+            fallback.stopRunning()
+            self.fallbackMicSession = nil
+        }
         self.isRunning = false
     }
     
-    // MARK: - SCStreamOutput
+    // MARK: - AVCaptureAudioDataOutputSampleBufferDelegate (macOS 12 Fallback)
+    
+    public func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+        processAudioBuffer(sampleBuffer)
+    }
+    
+    // MARK: - SCStreamOutput (macOS 13+)
     
     public func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
-        guard type == .audio, sampleBuffer.isValid else { return }
+        guard #available(macOS 13.0, *) else { return }
+        guard type == .audio else { return }
+        processAudioBuffer(sampleBuffer)
+    }
+    
+    // MARK: - Common Audio Buffer Processing
+    
+    private func processAudioBuffer(_ sampleBuffer: CMSampleBuffer) {
+        guard sampleBuffer.isValid else { return }
         
         guard let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer),
               let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(formatDescription)?.pointee else {

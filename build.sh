@@ -7,7 +7,7 @@ VERSION="1.0.0"
 if [ -f "VERSION" ]; then
     VERSION=$(tr -d ' \n\r' <VERSION)
 fi
-TARGET="arm64-apple-macos14.0"
+TARGET="arm64-apple-macos12.0"
 SDK_PATH=$(xcrun --show-sdk-path)
 
 echo "==> Building ${APP_NAME}.app v${VERSION}..."
@@ -20,15 +20,15 @@ if [ -f "Resources/leaf-app-icon.png" ]; then
     if [ ! -f "Resources/AppIcon.icns" ] || [ "Resources/leaf-app-icon.png" -nt "Resources/AppIcon.icns" ]; then
         echo "🎨 Generating AppIcon.icns from leaf-app-icon.png..."
         mkdir -p /tmp/AppIcon.iconset
-        sips -z 16 16     Resources/leaf-app-icon.png --out /tmp/AppIcon.iconset/icon_16x16.png >/dev/null 2>&1
-        sips -z 32 32     Resources/leaf-app-icon.png --out /tmp/AppIcon.iconset/icon_16x16@2x.png >/dev/null 2>&1
-        sips -z 32 32     Resources/leaf-app-icon.png --out /tmp/AppIcon.iconset/icon_32x32.png >/dev/null 2>&1
-        sips -z 64 64     Resources/leaf-app-icon.png --out /tmp/AppIcon.iconset/icon_32x32@2x.png >/dev/null 2>&1
-        sips -z 128 128   Resources/leaf-app-icon.png --out /tmp/AppIcon.iconset/icon_128x128.png >/dev/null 2>&1
-        sips -z 256 256   Resources/leaf-app-icon.png --out /tmp/AppIcon.iconset/icon_128x128@2x.png >/dev/null 2>&1
-        sips -z 256 256   Resources/leaf-app-icon.png --out /tmp/AppIcon.iconset/icon_256x256.png >/dev/null 2>&1
-        sips -z 512 512   Resources/leaf-app-icon.png --out /tmp/AppIcon.iconset/icon_256x256@2x.png >/dev/null 2>&1
-        sips -z 512 512   Resources/leaf-app-icon.png --out /tmp/AppIcon.iconset/icon_512x512.png >/dev/null 2>&1
+        sips -z 16 16 Resources/leaf-app-icon.png --out /tmp/AppIcon.iconset/icon_16x16.png >/dev/null 2>&1
+        sips -z 32 32 Resources/leaf-app-icon.png --out /tmp/AppIcon.iconset/icon_16x16@2x.png >/dev/null 2>&1
+        sips -z 32 32 Resources/leaf-app-icon.png --out /tmp/AppIcon.iconset/icon_32x32.png >/dev/null 2>&1
+        sips -z 64 64 Resources/leaf-app-icon.png --out /tmp/AppIcon.iconset/icon_32x32@2x.png >/dev/null 2>&1
+        sips -z 128 128 Resources/leaf-app-icon.png --out /tmp/AppIcon.iconset/icon_128x128.png >/dev/null 2>&1
+        sips -z 256 256 Resources/leaf-app-icon.png --out /tmp/AppIcon.iconset/icon_128x128@2x.png >/dev/null 2>&1
+        sips -z 256 256 Resources/leaf-app-icon.png --out /tmp/AppIcon.iconset/icon_256x256.png >/dev/null 2>&1
+        sips -z 512 512 Resources/leaf-app-icon.png --out /tmp/AppIcon.iconset/icon_256x256@2x.png >/dev/null 2>&1
+        sips -z 512 512 Resources/leaf-app-icon.png --out /tmp/AppIcon.iconset/icon_512x512.png >/dev/null 2>&1
         sips -z 1024 1024 Resources/leaf-app-icon.png --out /tmp/AppIcon.iconset/icon_512x512@2x.png >/dev/null 2>&1
         iconutil -c icns /tmp/AppIcon.iconset -o Resources/AppIcon.icns
         rm -rf /tmp/AppIcon.iconset
@@ -82,7 +82,7 @@ if [ "${NEEDS_BUILD}" = true ]; then
     <key>CFBundleVersion</key>
     <string>${VERSION}</string>
     <key>LSMinimumSystemVersion</key>
-    <string>13.0</string>
+    <string>12.0</string>
     <key>LSUIElement</key>
     <true/>
     <key>NSHighResolutionCapable</key>
@@ -103,23 +103,24 @@ if [ "${NEEDS_BUILD}" = true ]; then
 </plist>
 EOF
 
-    echo "==> Compiling Swift sources with swiftc..."
+    echo "==> Compiling Universal 2 binary (x86_64 + arm64)..."
     SWIFT_FILES=$(find Sources/SilentSpy -name "*.swift")
-    swiftc \
-        -O \
-        -sdk "${SDK_PATH}" \
-        -target "${TARGET}" \
-        -parse-as-library \
-        -framework Foundation \
-        -framework AppKit \
-        -framework SwiftUI \
-        -framework AVFoundation \
-        -framework AudioToolbox \
-        -framework ScreenCaptureKit \
-        -framework CoreMedia \
-        -framework CoreAudio \
-        ${SWIFT_FILES} \
-        -o "${BINARY}"
+    FRAMEWORKS=(
+        -framework Foundation
+        -framework AppKit
+        -framework SwiftUI
+        -framework AVFoundation
+        -framework AudioToolbox
+        -framework ScreenCaptureKit
+        -framework CoreMedia
+        -framework CoreAudio
+    )
+
+    swiftc -O -sdk "${SDK_PATH}" -target "x86_64-apple-macos12.0" -parse-as-library "${FRAMEWORKS[@]}" ${SWIFT_FILES} -o "/tmp/${APP_NAME}_x86_64"
+    swiftc -O -sdk "${SDK_PATH}" -target "arm64-apple-macos12.0" -parse-as-library "${FRAMEWORKS[@]}" ${SWIFT_FILES} -o "/tmp/${APP_NAME}_arm64"
+
+    lipo -create "/tmp/${APP_NAME}_x86_64" "/tmp/${APP_NAME}_arm64" -output "${BINARY}"
+    rm -f "/tmp/${APP_NAME}_x86_64" "/tmp/${APP_NAME}_arm64"
 
     echo "==> Signing application bundle with ad-hoc signature..."
     codesign -s - --force --deep -r="designated => identifier \"${BUNDLE_ID}\"" --entitlements Entitlements.plist "build/${APP_NAME}.app"

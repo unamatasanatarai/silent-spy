@@ -8,7 +8,7 @@
 
 SilentSpy is a lightweight macOS menu bar app that records your meetings in complete privacy. Unlike cloud AI meeting assistants that send disruptive bots into your Zoom, Google Meet, or Microsoft Teams calls, SilentSpy runs 100% locally. It captures dual-channel audio (your mic on one track, system audio on the other) directly to disk so you can drop the recording into your favorite transcription or AI tool whenever you're ready.
 
-![macOS 14+](https://img.shields.io/badge/macOS-14.0%2B-lightgrey?logo=apple)
+![macOS 12.3+](https://img.shields.io/badge/macOS-12.3%2B-lightgrey?logo=apple)
 ![Swift](https://img.shields.io/badge/Swift-5.9-orange?logo=swift)
 [![License: GPL v2](https://img.shields.io/badge/License-GPL%20v2-blue.svg)](LICENSE)
 
@@ -96,7 +96,7 @@ make run
 
 | Parameter | Specification |
 | :--- | :--- |
-| **Compatibility** | macOS 14.0+ (Apple Silicon & Intel) |
+| **Compatibility** | macOS 12.3+ (Apple Silicon & Intel) |
 | **Audio Encoding** | 48,000 Hz, MPEG-4 AAC (.m4a) |
 | **Channel Mapping** | Stereo (Ch 1 / Left: Mic, Ch 2 / Right: System Audio) |
 | **Storage Destination** | `~/Music/SilenSpy-Recordings/` (Configurable) |

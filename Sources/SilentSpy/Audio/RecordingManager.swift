@@ -30,7 +30,7 @@ public final class RecordingManager: ObservableObject, MicrophoneCaptureDelegate
     @Published public var quitPromptActive: Bool = false
     
     private let micManager = MicrophoneCaptureManager()
-    private let systemManager = SystemAudioCaptureManager()
+    private var systemManager: Any? = nil
     private var m4aWriter: StreamingM4AWriter?
     private var synchronizer: AudioStreamSynchronizer?
     
@@ -39,7 +39,11 @@ public final class RecordingManager: ObservableObject, MicrophoneCaptureDelegate
     
     public init() {
         micManager.delegate = self
-        systemManager.delegate = self
+        if #available(macOS 12.3, *) {
+            let sysMgr = SystemAudioCaptureManager()
+            sysMgr.delegate = self
+            self.systemManager = sysMgr
+        }
         self.storageDirectoryURL = AudioConfig.storageDirectory
         checkPermissions()
         
@@ -56,7 +60,11 @@ public final class RecordingManager: ObservableObject, MicrophoneCaptureDelegate
     
     public func checkPermissions() {
         self.hasMicPermission = MicrophoneCaptureManager.checkPermission()
-        self.hasScreenPermission = SystemAudioCaptureManager.checkPermission()
+        if #available(macOS 12.3, *) {
+            self.hasScreenPermission = SystemAudioCaptureManager.checkPermission()
+        } else {
+            self.hasScreenPermission = false
+        }
         self.hasStoragePermission = AudioConfig.checkStoragePermission()
         self.storageDirectoryURL = AudioConfig.storageDirectory
         updateCaptureEngines()
@@ -89,18 +97,29 @@ public final class RecordingManager: ObservableObject, MicrophoneCaptureDelegate
             micPeakLevel = 0.0
         }
         
-        if isRecording && hasScreenPermission {
-            if !systemManager.isRunning {
-                Task {
-                    try? await systemManager.startCapture()
+        if #available(macOS 12.3, *) {
+            if let sysMgr = systemManager as? SystemAudioCaptureManager {
+                if isRecording && hasScreenPermission {
+                    if !sysMgr.isRunning {
+                        Task {
+                            do {
+                                try await sysMgr.startCapture()
+                            } catch {
+                                self.errorMessage = error.localizedDescription
+                            }
+                        }
+                    }
+                } else {
+                    if sysMgr.isRunning {
+                        Task {
+                            await sysMgr.stopCapture()
+                        }
+                    }
+                    systemLevel = 0.0
+                    systemPeakLevel = 0.0
                 }
             }
         } else {
-            if systemManager.isRunning {
-                Task {
-                    await systemManager.stopCapture()
-                }
-            }
             systemLevel = 0.0
             systemPeakLevel = 0.0
         }
@@ -123,7 +142,9 @@ public final class RecordingManager: ObservableObject, MicrophoneCaptureDelegate
     }
     
     public func requestScreenPermission() {
-        SystemAudioCaptureManager.requestPermission()
+        if #available(macOS 12.3, *) {
+            SystemAudioCaptureManager.requestPermission()
+        }
         // Check again after a brief delay
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
             self?.checkPermissions()
