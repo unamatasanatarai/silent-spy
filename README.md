@@ -2,12 +2,20 @@
   <img src="Resources/leaf-app-icon.png" alt="SilentSpy Logo" width="128" height="128">
 </p>
 
+<p align="center">
+  <a href="https://github.com/unamatasanatarai/silent-spy/releases/latest/download/SilentSpy.dmg">
+    <img src="https://img.shields.io/badge/Download-SilentSpy.dmg-007AFF?style=for-the-badge&logo=apple&logoColor=white" alt="Download SilentSpy.dmg">
+  </a>
+</p>
+
 # SilentSpy
 
 **Silent, bot-free meeting recorder for macOS. Record any call discreetly—no intrusive bots, no "transcribing" announcements, and zero setup. Just record, drag & drop to transcribe.**
 
 SilentSpy is a lightweight macOS menu bar app that records your meetings in complete privacy. Unlike cloud AI meeting assistants that send disruptive bots into your Zoom, Google Meet, or Microsoft Teams calls, SilentSpy runs 100% locally. It captures dual-channel audio (your mic on one track, system audio on the other) directly to disk so you can drop the recording into your favorite transcription or AI tool whenever you're ready.
 
+
+[![Latest Release](https://img.shields.io/github/v/release/unamatasanatarai/silent-spy?color=28a745&logo=github)](https://github.com/unamatasanatarai/silent-spy/releases/latest)
 ![macOS 12.3+](https://img.shields.io/badge/macOS-12.3%2B-lightgrey?logo=apple)
 ![Swift](https://img.shields.io/badge/Swift-5.9-orange?logo=swift)
 [![License: GPL v2](https://img.shields.io/badge/License-GPL%20v2-blue.svg)](LICENSE)
