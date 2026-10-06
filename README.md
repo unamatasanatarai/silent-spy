@@ -73,11 +73,28 @@ Always be certain your audio is being captured. Live VU meters with peak hold in
 
 ## Built on Native macOS Frameworks
 
-SilentSpy completely bypasses third-party virtual audio cables (like BlackHole or Soundflower) by utilizing Apple's modern native APIs:
+SilentSpy utilizes Apple's high-performance audio APIs:
 
-* **System & App Audio**: Captured via high-performance `ScreenCaptureKit`.
-* **Microphone Input**: Managed via `AVAudioEngine`.
+* **macOS 13+ (Ventura, Sonoma, Sequoia)**: 100% driver-free system audio capture via `ScreenCaptureKit`.
+* **macOS 12 (Monterey)**: System audio capture via **BlackHole 2ch** virtual audio loopback driver.
+* **Microphone Input**: Managed via `AVFoundation`.
 * **Format**: Standard 48,000 Hz, MPEG-4 AAC (`.m4a`).
+
+---
+
+## Installing BlackHole (macOS 12 Monterey Only)
+
+On **macOS 13+**, no virtual drivers or setup are needed. On **macOS 12**, follow these quick steps to enable system audio recording:
+
+### Option A: Via Homebrew (Recommended)
+```bash
+brew install blackhole-2ch
+```
+
+### Option B: Manual Installation
+1. Download the **BlackHole 2ch** installer from [Existential Audio on GitHub](https://github.com/ExistentialAudio/BlackHole#installation-instructions).
+2. Open the `.pkg` file and complete the installation wizard.
+3. Launch SilentSpy—it automatically detects BlackHole and routes system audio to Channel 2.
 
 ---
 
