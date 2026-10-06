@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help build run launch revoke clean install dmg
+.PHONY: help build run launch revoke clean install dmg release release-dry-run
 
 ## help: Display this help message
 help:
@@ -45,6 +45,15 @@ install: build
 ## dmg: Create DMG installer package with custom styled background
 dmg: build
 	@./scripts/build_dmg.sh
+
+## release-dry-run: Preview release tagging and publishing without making remote changes
+release-dry-run:
+	@./scripts/release.sh --dry-run
+
+## release: Build DMG, create & push tag, and publish GitHub Release with DMG attached
+release:
+	@./scripts/release.sh
+
 
 
 
