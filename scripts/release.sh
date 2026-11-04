@@ -39,7 +39,17 @@ if [ -n "${UNCOMMITTED}" ]; then
     fi
 fi
 
-# 3. Build DMG package if not already built or stale
+# 3. Refuse to publish an un-notarized build unless explicitly allowed
+if [ -z "${SIGN_IDENTITY:-}" ] || [ -z "${NOTARY_PROFILE:-}" ]; then
+    echo "⚠️  SIGN_IDENTITY and/or NOTARY_PROFILE not set: the release would be ad-hoc signed and not notarized."
+    echo "   Users would have to bypass Gatekeeper, and permissions reset on every update."
+    if [ "${ALLOW_UNNOTARIZED:-}" != "1" ] && [ "${DRY_RUN}" = false ]; then
+        echo "❌ Set SIGN_IDENTITY + NOTARY_PROFILE, or re-run with ALLOW_UNNOTARIZED=1 to publish anyway."
+        exit 1
+    fi
+fi
+
+# 4. Build DMG package if not already built or stale
 echo "📦 Step 1: Building distribution DMG..."
 if [ "${DRY_RUN}" = true ]; then
     echo "==> Running 'make dmg' to verify build artifacts..."
@@ -55,7 +65,7 @@ fi
 
 echo "✅ Distribution asset ready: ${DMG_FILE} ($(du -h "${DMG_FILE}" | cut -f1))"
 
-# 4. Handle Tagging & GitHub Release
+# 5. Handle Tagging & GitHub Release
 echo "🏷️  Step 2: Tagging & Publishing Release (${TAG})..."
 
 # Unset invalid GITHUB_TOKEN if present to fall back to gh keyring auth

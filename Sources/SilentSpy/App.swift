@@ -34,9 +34,22 @@ final class SilentSpyApp: NSObject, NSApplicationDelegate {
         return false
     }
     
-    func applicationWillTerminate(_ notification: Notification) {
-        if let manager = self.manager, manager.isRecording {
-            manager.stopRecording()
+    /// Never let the process exit while a recording is open or still being finalized: an M4A only
+    /// becomes playable once its `moov` index is written on close. Delay termination until done.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let manager = manager, manager.hasUnfinalizedRecordings else {
+            return .terminateNow
         }
+
+        var replied = false
+        let reply = {
+            guard !replied else { return }
+            replied = true
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        manager.finalizeAll(completion: reply)
+        // Backstop: never hang shutdown/logout indefinitely if the encoder wedges.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 15, execute: reply)
+        return .terminateLater
     }
 }

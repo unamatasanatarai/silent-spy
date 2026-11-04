@@ -97,5 +97,22 @@ hdiutil convert "${TEMP_DMG}" -format UDZO -imagekey zlib-level=9 -o "${FINAL_DM
 rm -f "${TEMP_DMG}"
 rm -rf build/dmg_stage build/*_test.dmg
 
+# 9. Sign & notarize (only when credentials are configured)
+#    SIGN_IDENTITY="Developer ID Application: …"  NOTARY_PROFILE=<xcrun notarytool store-credentials profile>
+if [ -n "${SIGN_IDENTITY:-}" ]; then
+    echo "🔏 Signing DMG..."
+    codesign --force --timestamp -s "${SIGN_IDENTITY}" "${FINAL_DMG}"
+    if [ -n "${NOTARY_PROFILE:-}" ]; then
+        echo "📨 Notarizing (this can take a few minutes)..."
+        xcrun notarytool submit "${FINAL_DMG}" --keychain-profile "${NOTARY_PROFILE}" --wait
+        xcrun stapler staple "${FINAL_DMG}"
+        echo "✅ Notarized & stapled."
+    else
+        echo "⚠️  NOTARY_PROFILE not set — DMG is signed but NOT notarized."
+    fi
+else
+    echo "⚠️  SIGN_IDENTITY not set — DMG contains an ad-hoc signed app (Gatekeeper will block it)."
+fi
+
 DMG_SIZE=$(du -h "${FINAL_DMG}" | cut -f1)
 echo "✅ DMG successfully built: ${FINAL_DMG} (${DMG_SIZE})"

@@ -1,162 +1,231 @@
 import Foundation
-import AudioToolbox
-import CoreAudio
+import AVFoundation
+import CoreMedia
 
-/// High-performance streaming AAC (.m4a) audio writer.
-/// Encodes dual-channel Linear PCM audio (Left: Mic, Right: System) into an M4A/AAC container
-/// in real time with minimal memory footprint.
-public final class StreamingM4AWriter {
+/// Streaming AAC (.m4a) writer for dual-channel audio (Left: Mic, Right: System).
+///
+/// Crash-resilient: the file is written as a *fragmented* MPEG-4 (`movieFragmentInterval`), so if the
+/// app crashes, is force-quit, or the Mac loses power, everything up to the last fragment (at most
+/// `fragmentInterval` seconds ago) is still playable. A clean `finish` produces a normal, complete file.
+///
+/// All writer state is confined to `writeQueue`. The first failure (disk full, volume gone…) is
+/// reported once via `onWriteError`, and further writes are skipped.
+public final class StreamingM4AWriter: @unchecked Sendable { // state confined to writeQueue / statsLock
     public let fileURL: URL
     public let sampleRate: Double
     public let channels: UInt32
-    
-    private var extAudioFile: ExtAudioFileRef?
+
+    /// Maximum audio lost on a crash.
+    public static let fragmentInterval: Double = 3.0
+
+    /// Called once, on the write queue, when encoding/writing fails.
+    public var onWriteError: ((OSStatus) -> Void)?
+
     private let writeQueue = DispatchQueue(label: "com.silentspy.m4awriter", qos: .userInitiated)
-    private var totalFramesWritten: Int64 = 0
-    public private(set) var isWriting: Bool = false
-    
+
+    // writeQueue-confined
+    private let assetWriter: AVAssetWriter
+    private let input: AVAssetWriterInput
+    private let pcmFormat: AVAudioFormat
+    private var framesAppended: Int64 = 0
+    private var hasFailed = false
+    private var isFinished = false
+
+    // Read from the main thread for UI, written on writeQueue
+    private let statsLock = NSLock()
+    private var _totalFramesWritten: Int64 = 0
+
     public init(fileURL: URL, sampleRate: Double = 48000.0, channels: UInt32 = 2) throws {
         self.fileURL = fileURL
         self.sampleRate = sampleRate
         self.channels = channels
-        
+
         let directoryURL = fileURL.deletingLastPathComponent()
         if !FileManager.default.fileExists(atPath: directoryURL.path) {
             try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
         }
+        // AVAssetWriter refuses to overwrite; callers pass unique URLs, but stay safe.
         if FileManager.default.fileExists(atPath: fileURL.path) {
-            try? FileManager.default.removeItem(at: fileURL)
+            try FileManager.default.removeItem(at: fileURL)
         }
-        
-        // Output AAC destination format definition
-        var dstFormat = AudioStreamBasicDescription()
-        dstFormat.mFormatID = kAudioFormatMPEG4AAC
-        dstFormat.mSampleRate = sampleRate
-        dstFormat.mChannelsPerFrame = channels
-        
-        var formatSize = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
-        AudioFormatGetProperty(kAudioFormatProperty_FormatInfo, 0, nil, &formatSize, &dstFormat)
-        
-        var audioFile: ExtAudioFileRef?
-        var status = ExtAudioFileCreateWithURL(
-            fileURL as CFURL,
-            kAudioFileM4AType,
-            &dstFormat,
-            nil,
-            AudioFileFlags.eraseFile.rawValue,
-            &audioFile
-        )
-        
-        guard status == noErr, let audioFile = audioFile else {
-            throw NSError(
-                domain: "SilentSpy.M4AWriter",
-                code: Int(status),
-                userInfo: [NSLocalizedDescriptionKey: "Failed to create M4A file at \(fileURL.path) (OSStatus: \(status))."]
-            )
+
+        guard let pcmFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: sampleRate,
+            channels: AVAudioChannelCount(channels),
+            interleaved: false
+        ) else {
+            throw Self.error(-50, "Unsupported PCM format (\(sampleRate) Hz, \(channels) ch).")
         }
-        
-        // Client PCM format (Float32, non-interleaved stereo: Buf[0] = Mic, Buf[1] = System)
-        var srcFormat = AudioStreamBasicDescription(
-            mSampleRate: sampleRate,
-            mFormatID: kAudioFormatLinearPCM,
-            mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsNonInterleaved,
-            mBytesPerPacket: 4,
-            mFramesPerPacket: 1,
-            mBytesPerFrame: 4,
-            mChannelsPerFrame: channels,
-            mBitsPerChannel: 32,
-            mReserved: 0
+        self.pcmFormat = pcmFormat
+
+        let writer = try AVAssetWriter(outputURL: fileURL, fileType: .m4a)
+        writer.movieFragmentInterval = CMTime(seconds: Self.fragmentInterval, preferredTimescale: 600)
+
+        let input = AVAssetWriterInput(
+            mediaType: .audio,
+            outputSettings: [
+                AVFormatIDKey: kAudioFormatMPEG4AAC,
+                AVSampleRateKey: sampleRate,
+                AVNumberOfChannelsKey: channels,
+                AVEncoderBitRateKey: 192_000,
+            ],
+            sourceFormatHint: pcmFormat.formatDescription
         )
-        
-        let clientFormatSize = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
-        status = ExtAudioFileSetProperty(
-            audioFile,
-            kExtAudioFileProperty_ClientDataFormat,
-            clientFormatSize,
-            &srcFormat
-        )
-        
-        guard status == noErr else {
-            ExtAudioFileDispose(audioFile)
-            throw NSError(
-                domain: "SilentSpy.M4AWriter",
-                code: Int(status),
-                userInfo: [NSLocalizedDescriptionKey: "Failed to set client audio format for M4A writer (OSStatus: \(status))."]
-            )
+        input.expectsMediaDataInRealTime = true
+
+        guard writer.canAdd(input) else {
+            throw Self.error(-50, "Cannot add AAC audio input to M4A writer.")
         }
-        
-        self.extAudioFile = audioFile
-        self.isWriting = true
+        writer.add(input)
+
+        guard writer.startWriting() else {
+            throw Self.error(-1, "Failed to start M4A writer at \(fileURL.path): \(writer.error?.localizedDescription ?? "unknown error").")
+        }
+        writer.startSession(atSourceTime: .zero)
+
+        self.assetWriter = writer
+        self.input = input
     }
-    
-    /// Writes dual-channel audio frames (Left = Mic, Right = System Audio) to the M4A encoder.
-    public func writeInterleavedSamples(micSamples: [Float], sysSamples: [Float]) {
-        guard isWriting else { return }
-        
-        writeQueue.async { [weak self] in
-            guard let self = self, let extAudioFile = self.extAudioFile else { return }
-            
-            let frameCount = min(micSamples.count, sysSamples.count)
+
+    /// Queues dual-channel frames (Left = Mic, Right = System Audio) for encoding.
+    public func write(micSamples: [Float], systemSamples: [Float]) {
+        writeQueue.async { [self] in
+            guard !hasFailed, !isFinished else { return }
+
+            let frameCount = min(micSamples.count, systemSamples.count)
             guard frameCount > 0 else { return }
-            
-            var micArray = micSamples
-            var sysArray = sysSamples
-            
-            micArray.withUnsafeMutableBufferPointer { micPtr in
-                sysArray.withUnsafeMutableBufferPointer { sysPtr in
-                    let ablPointer = AudioBufferList.allocate(maximumBuffers: 2)
-                    defer {
-                        free(UnsafeMutableRawPointer(ablPointer.unsafeMutablePointer))
-                    }
-                    
-                    ablPointer[0] = AudioBuffer(
-                        mNumberChannels: 1,
-                        mDataByteSize: UInt32(frameCount * MemoryLayout<Float>.size),
-                        mData: micPtr.baseAddress
-                    )
-                    ablPointer[1] = AudioBuffer(
-                        mNumberChannels: 1,
-                        mDataByteSize: UInt32(frameCount * MemoryLayout<Float>.size),
-                        mData: sysPtr.baseAddress
-                    )
-                    
-                    let status = ExtAudioFileWrite(extAudioFile, UInt32(frameCount), ablPointer.unsafePointer)
-                    if status == noErr {
-                        self.totalFramesWritten += Int64(frameCount)
-                    } else {
-                        print("SilentSpy: ExtAudioFileWrite error: \(status)")
-                    }
-                }
-            }
-        }
-    }
-    
-    public func finish(completion: (() -> Void)? = nil) {
-        writeQueue.async { [weak self] in
-            guard let self = self else {
-                completion?()
+
+            guard let sampleBuffer = makeSampleBuffer(mic: micSamples, system: systemSamples, frames: frameCount) else {
+                fail(-1)
                 return
             }
-            if let extAudioFile = self.extAudioFile {
-                ExtAudioFileDispose(extAudioFile)
-                self.extAudioFile = nil
+
+            // Real-time input: wait briefly for the encoder if it's momentarily busy.
+            var waited = 0
+            while !input.isReadyForMoreMediaData && assetWriter.status == .writing && waited < 2000 {
+                usleep(1000)
+                waited += 1
             }
-            self.isWriting = false
-            completion?()
+
+            guard assetWriter.status == .writing, input.append(sampleBuffer) else {
+                fail(Self.status(of: assetWriter.error))
+                return
+            }
+
+            framesAppended += Int64(frameCount)
+            statsLock.lock()
+            _totalFramesWritten = framesAppended
+            statsLock.unlock()
         }
     }
-    
-    public var currentBytesWritten: UInt32 {
+
+    /// Finalizes the file. Completion (on the write queue) receives `noErr` on success.
+    public func finish(completion: ((OSStatus) -> Void)? = nil) {
+        writeQueue.async { [self] in
+            guard !isFinished else {
+                completion?(hasFailed ? -1 : noErr)
+                return
+            }
+            isFinished = true
+
+            guard assetWriter.status == .writing else {
+                completion?(Self.status(of: assetWriter.error))
+                return
+            }
+
+            input.markAsFinished()
+            // Nothing written at all: still produce a valid (empty) file.
+            assetWriter.endSession(atSourceTime: CMTime(value: framesAppended, timescale: CMTimeScale(sampleRate)))
+
+            let done = DispatchSemaphore(value: 0)
+            assetWriter.finishWriting { done.signal() }
+            done.wait()
+
+            if assetWriter.status == .completed && !hasFailed {
+                completion?(noErr)
+            } else {
+                completion?(hasFailed ? -1 : Self.status(of: assetWriter.error))
+            }
+        }
+    }
+
+    public var totalFramesWritten: Int64 {
+        statsLock.lock()
+        defer { statsLock.unlock() }
+        return _totalFramesWritten
+    }
+
+    public var durationSeconds: Double {
+        Double(totalFramesWritten) / sampleRate
+    }
+
+    public var currentBytesWritten: UInt64 {
         if let attrs = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
            let size = attrs[.size] as? NSNumber {
-            return size.uint32Value
+            return size.uint64Value
         }
-        // Approximate compressed stereo AAC size (~192 kbps = ~24 KB/s)
-        let seconds = Double(totalFramesWritten) / sampleRate
-        return UInt32(seconds * 24_000)
+        return 0
     }
-    
-    public var durationSeconds: Double {
-        return Double(totalFramesWritten) / sampleRate
+
+    // MARK: - Private (writeQueue)
+
+    private func fail(_ status: OSStatus) {
+        guard !hasFailed else { return }
+        hasFailed = true
+        onWriteError?(status)
+    }
+
+    private func makeSampleBuffer(mic: [Float], system: [Float], frames: Int) -> CMSampleBuffer? {
+        guard let pcm = AVAudioPCMBuffer(pcmFormat: pcmFormat, frameCapacity: AVAudioFrameCount(frames)),
+              let channelData = pcm.floatChannelData else { return nil }
+        pcm.frameLength = AVAudioFrameCount(frames)
+        mic.withUnsafeBufferPointer { channelData[0].update(from: $0.baseAddress!, count: frames) }
+        if channels > 1 {
+            system.withUnsafeBufferPointer { channelData[1].update(from: $0.baseAddress!, count: frames) }
+        }
+
+        var timing = CMSampleTimingInfo(
+            duration: CMTime(value: 1, timescale: CMTimeScale(sampleRate)),
+            presentationTimeStamp: CMTime(value: framesAppended, timescale: CMTimeScale(sampleRate)),
+            decodeTimeStamp: .invalid
+        )
+        var sampleBuffer: CMSampleBuffer?
+        var status = CMSampleBufferCreate(
+            allocator: kCFAllocatorDefault,
+            dataBuffer: nil,
+            dataReady: false,
+            makeDataReadyCallback: nil,
+            refcon: nil,
+            formatDescription: pcmFormat.formatDescription,
+            sampleCount: CMItemCount(frames),
+            sampleTimingEntryCount: 1,
+            sampleTimingArray: &timing,
+            sampleSizeEntryCount: 0,
+            sampleSizeArray: nil,
+            sampleBufferOut: &sampleBuffer
+        )
+        guard status == noErr, let buffer = sampleBuffer else { return nil }
+
+        status = CMSampleBufferSetDataBufferFromAudioBufferList(
+            buffer,
+            blockBufferAllocator: kCFAllocatorDefault,
+            blockBufferMemoryAllocator: kCFAllocatorDefault,
+            flags: 0,
+            bufferList: pcm.audioBufferList
+        )
+        return status == noErr ? buffer : nil
+    }
+
+    private static func status(of error: Error?) -> OSStatus {
+        guard let nsError = error as NSError? else { return -1 }
+        if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? NSError {
+            return OSStatus(truncatingIfNeeded: underlying.code)
+        }
+        return OSStatus(truncatingIfNeeded: nsError.code)
+    }
+
+    private static func error(_ code: OSStatus, _ message: String) -> NSError {
+        NSError(domain: "SilentSpy.M4AWriter", code: Int(code), userInfo: [NSLocalizedDescriptionKey: message])
     }
 }

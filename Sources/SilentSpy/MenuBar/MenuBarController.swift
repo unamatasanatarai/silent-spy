@@ -151,9 +151,7 @@ public final class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate
     }
 
     @objc private func menuQuitApp() {
-        if manager.isRecording {
-            manager.stopRecording()
-        }
+        // applicationShouldTerminate stops & finalizes any recording before the process exits.
         NSApp.terminate(nil)
     }
     
@@ -235,9 +233,7 @@ public final class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate
             // Second press within 1.5s -> terminate
             quitResetWorkItem?.cancel()
             manager.quitPromptActive = false
-            if manager.isRecording {
-                manager.stopRecording()
-            }
+            // applicationShouldTerminate stops & finalizes any recording before the process exits.
             NSApp.terminate(nil)
         } else {
             // First press -> prompt user

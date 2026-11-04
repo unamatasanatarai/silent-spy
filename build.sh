@@ -8,6 +8,14 @@ if [ -f "VERSION" ]; then
     VERSION=$(tr -d ' \n\r' <VERSION)
 fi
 MIN_MACOS="12.3"
+# Code signing:
+#   SIGN_IDENTITY="Developer ID Application: Name (TEAMID)" ./build.sh   -> distributable, hardened runtime
+#   (unset)                                                           -> ad-hoc, local use only
+# Never override the designated requirement with an identifier-only rule: TCC would then accept ANY
+# binary claiming "com.silentspy.app" as SilentSpy and hand it our Microphone/Screen Recording grants.
+SIGN_IDENTITY="${SIGN_IDENTITY:-}"
+SIGN_MODE="${SIGN_IDENTITY:-adhoc}"
+SIGN_STAMP="build/.sign-mode"
 ARCHS=(x86_64 arm64)
 SDK_PATH=$(xcrun --show-sdk-path)
 
@@ -52,6 +60,10 @@ if [ -f "${BINARY}" ]; then
     NEWEST_SOURCE=$(find Sources/SilentSpy -name '*.swift' -newer "${BINARY}" 2>/dev/null | head -n 1)
     if [ -z "${NEWEST_SOURCE}" ] && [ ! "build.sh" -nt "${BINARY}" ] && [ ! "Entitlements.plist" -nt "${BINARY}" ]; then
         NEEDS_BUILD=false
+        # Force a rebuild when the signing mode changed
+        if [ "$(cat "${SIGN_STAMP}" 2>/dev/null)" != "${SIGN_MODE}" ]; then
+            NEEDS_BUILD=true
+        fi
         # Force a rebuild if the existing binary is missing an architecture slice
         for ARCH in "${ARCHS[@]}"; do
             if ! lipo "${BINARY}" -verify_arch "${ARCH}" 2>/dev/null; then
@@ -121,6 +133,7 @@ EOF
         -framework ScreenCaptureKit
         -framework CoreMedia
         -framework CoreAudio
+        -framework Accelerate
     )
 
     OBJ_DIR=$(mktemp -d "${TMPDIR:-/tmp}/${APP_NAME}-build.XXXXXX")
@@ -140,8 +153,18 @@ EOF
     done
     echo "==> Architectures: $(lipo -archs "${BINARY}")"
 
-    echo "==> Signing application bundle with ad-hoc signature..."
-    codesign -s - --force --deep -r="designated => identifier \"${BUNDLE_ID}\"" --entitlements Entitlements.plist "build/${APP_NAME}.app"
+    if [ -n "${SIGN_IDENTITY}" ]; then
+        echo "==> Signing with \"${SIGN_IDENTITY}\" (hardened runtime, secure timestamp)..."
+        codesign --force --options runtime --timestamp \
+            --entitlements Entitlements.plist -s "${SIGN_IDENTITY}" "build/${APP_NAME}.app"
+    else
+        echo "==> Ad-hoc signing (hardened runtime, default cdhash requirement) — local use only."
+        echo "    macOS will re-ask for Microphone/Screen Recording permission after each code change."
+        codesign --force --options runtime \
+            --entitlements Entitlements.plist -s - "build/${APP_NAME}.app"
+    fi
+    codesign --verify --strict "build/${APP_NAME}.app"
+    echo "${SIGN_MODE}" >"${SIGN_STAMP}"
 
     echo "==> Registering updated application bundle with LaunchServices..."
     /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f -R -trusted "build/${APP_NAME}.app" || true

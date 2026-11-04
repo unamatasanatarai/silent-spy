@@ -115,6 +115,20 @@ make run
 * `make reset-perms` — Resets Microphone & Screen Recording permissions for testing
 * `make clean` — Cleans build artifacts
 
+### Signing & Releasing
+
+Without credentials the app is **ad-hoc signed** (fine for local use; macOS re-asks for permissions after each code change).
+For a distributable build, sign with a Developer ID and notarize:
+
+```bash
+xcrun notarytool store-credentials silentspy-notary   # one-time
+export SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"
+export NOTARY_PROFILE=silentspy-notary
+make release
+```
+
+`make release` refuses to publish an un-notarized build unless `ALLOW_UNNOTARIZED=1` is set.
+
 ---
 
 ## Technical Specifications
@@ -122,7 +136,7 @@ make run
 | Parameter | Specification |
 | :--- | :--- |
 | **Compatibility** | macOS 12.3+ (Apple Silicon & Intel) |
-| **Audio Encoding** | 48,000 Hz, MPEG-4 AAC (.m4a) |
+| **Audio Encoding** | 48,000 Hz, MPEG-4 AAC (.m4a), fragmented every 3 s (crash-safe) |
 | **Channel Mapping** | Stereo (Ch 1 / Left: Mic, Ch 2 / Right: System Audio) |
 | **Storage Destination** | `~/Music/SilenSpy-Recordings/` (Configurable) |
 | **Permissions Required** | Microphone & Screen/System Audio Capture |

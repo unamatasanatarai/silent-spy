@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import AVFoundation
 
 public struct AudioConfig {
     public static let sampleRate: Double = 48000.0
@@ -8,6 +9,32 @@ public struct AudioConfig {
     
     private static let storageBookmarkKey = "SilentSpy_StorageBookmark"
     private static let storagePathKey = "SilentSpy_StoragePath"
+    /// Paths whose security scope has already been opened (open once, not on every access).
+    nonisolated(unsafe) private static var accessedScopedPaths = Set<String>() // guarded by accessLock
+    private static let accessLock = NSLock()
+
+    /// Output settings for `AVCaptureAudioDataOutput`: Core Audio converts whatever the device
+    /// delivers (any rate, bit depth or layout) to Float32 @ `sampleRate`.
+    public static func captureOutputSettings(channels: Int) -> [String: Any] {
+        return [
+            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVSampleRateKey: sampleRate,
+            AVNumberOfChannelsKey: channels,
+            AVLinearPCMBitDepthKey: 32,
+            AVLinearPCMIsFloatKey: true,
+            AVLinearPCMIsNonInterleaved: true,
+            AVLinearPCMIsBigEndianKey: false,
+        ]
+    }
+
+    private static func beginScopedAccessOnce(_ url: URL) {
+        accessLock.lock()
+        defer { accessLock.unlock() }
+        guard !accessedScopedPaths.contains(url.path) else { return }
+        if url.startAccessingSecurityScopedResource() {
+            accessedScopedPaths.insert(url.path)
+        }
+    }
     
     public static var defaultStorageDirectory: URL {
         let musicDir = FileManager.default.urls(for: .musicDirectory, in: .userDomainMask).first
@@ -21,7 +48,7 @@ public struct AudioConfig {
                 var isStale = false
                 if let resolvedURL = try? URL(resolvingBookmarkData: bookmarkData, options: .withSecurityScope, relativeTo: nil, bookmarkDataIsStale: &isStale) {
                     if !isStale {
-                        _ = resolvedURL.startAccessingSecurityScopedResource()
+                        beginScopedAccessOnce(resolvedURL)
                         return resolvedURL
                     }
                 }
@@ -79,7 +106,7 @@ public struct AudioConfig {
         
         let handler: (NSApplication.ModalResponse) -> Void = { response in
             if response == .OK, let selectedURL = panel.url {
-                _ = selectedURL.startAccessingSecurityScopedResource()
+                beginScopedAccessOnce(selectedURL)
                 self.storageDirectory = selectedURL
                 completion(selectedURL)
             } else {
@@ -99,11 +126,12 @@ public struct AudioConfig {
         formatter.dateFormat = "yyyy-MM-dd_HH-mm"
         let timestamp = formatter.string(from: Date())
         let baseFilename = "\(prefix)_\(timestamp)"
-        var candidateURL = storageDirectory.appendingPathComponent("\(baseFilename).m4a")
+        let directory = storageDirectory
+        var candidateURL = directory.appendingPathComponent("\(baseFilename).m4a")
         
         var counter = 1
         while FileManager.default.fileExists(atPath: candidateURL.path) {
-            candidateURL = storageDirectory.appendingPathComponent("\(baseFilename)_\(counter).m4a")
+            candidateURL = directory.appendingPathComponent("\(baseFilename)_\(counter).m4a")
             counter += 1
         }
         return candidateURL
