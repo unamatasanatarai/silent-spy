@@ -7,7 +7,8 @@ VERSION="1.0.0"
 if [ -f "VERSION" ]; then
     VERSION=$(tr -d ' \n\r' <VERSION)
 fi
-TARGET="arm64-apple-macos12.0"
+MIN_MACOS="12.3"
+ARCHS=(x86_64 arm64)
 SDK_PATH=$(xcrun --show-sdk-path)
 
 echo "==> Building ${APP_NAME}.app v${VERSION}..."
@@ -51,6 +52,12 @@ if [ -f "${BINARY}" ]; then
     NEWEST_SOURCE=$(find Sources/SilentSpy -name '*.swift' -newer "${BINARY}" 2>/dev/null | head -n 1)
     if [ -z "${NEWEST_SOURCE}" ] && [ ! "build.sh" -nt "${BINARY}" ] && [ ! "Entitlements.plist" -nt "${BINARY}" ]; then
         NEEDS_BUILD=false
+        # Force a rebuild if the existing binary is missing an architecture slice
+        for ARCH in "${ARCHS[@]}"; do
+            if ! lipo "${BINARY}" -verify_arch "${ARCH}" 2>/dev/null; then
+                NEEDS_BUILD=true
+            fi
+        done
     fi
 fi
 
@@ -82,7 +89,7 @@ if [ "${NEEDS_BUILD}" = true ]; then
     <key>CFBundleVersion</key>
     <string>${VERSION}</string>
     <key>LSMinimumSystemVersion</key>
-    <string>12.0</string>
+    <string>${MIN_MACOS}</string>
     <key>LSUIElement</key>
     <true/>
     <key>NSHighResolutionCapable</key>
@@ -116,11 +123,22 @@ EOF
         -framework CoreAudio
     )
 
-    swiftc -O -sdk "${SDK_PATH}" -target "x86_64-apple-macos12.0" -parse-as-library "${FRAMEWORKS[@]}" ${SWIFT_FILES} -o "/tmp/${APP_NAME}_x86_64"
-    swiftc -O -sdk "${SDK_PATH}" -target "arm64-apple-macos12.0" -parse-as-library "${FRAMEWORKS[@]}" ${SWIFT_FILES} -o "/tmp/${APP_NAME}_arm64"
+    OBJ_DIR=$(mktemp -d "${TMPDIR:-/tmp}/${APP_NAME}-build.XXXXXX")
+    SLICES=()
+    for ARCH in "${ARCHS[@]}"; do
+        echo "   -> ${ARCH}"
+        swiftc -O -sdk "${SDK_PATH}" -target "${ARCH}-apple-macos${MIN_MACOS}" -parse-as-library \
+            "${FRAMEWORKS[@]}" ${SWIFT_FILES} -o "${OBJ_DIR}/${APP_NAME}_${ARCH}"
+        SLICES+=("${OBJ_DIR}/${APP_NAME}_${ARCH}")
+    done
 
-    lipo -create "/tmp/${APP_NAME}_x86_64" "/tmp/${APP_NAME}_arm64" -output "${BINARY}"
-    rm -f "/tmp/${APP_NAME}_x86_64" "/tmp/${APP_NAME}_arm64"
+    lipo -create "${SLICES[@]}" -output "${BINARY}"
+    rm -rf "${OBJ_DIR}"
+
+    for ARCH in "${ARCHS[@]}"; do
+        lipo "${BINARY}" -verify_arch "${ARCH}" || { echo "❌ Missing ${ARCH} slice in ${BINARY}"; exit 1; }
+    done
+    echo "==> Architectures: $(lipo -archs "${BINARY}")"
 
     echo "==> Signing application bundle with ad-hoc signature..."
     codesign -s - --force --deep -r="designated => identifier \"${BUNDLE_ID}\"" --entitlements Entitlements.plist "build/${APP_NAME}.app"

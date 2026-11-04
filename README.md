@@ -35,7 +35,7 @@ SilentSpy automatically splits your audio into two separate channels in a single
 This separation makes post-meeting processing, AI speaker diarization, and custom mixing incredibly clean and effortless.
 
 ### ⚡ Drag & Drop Workflow for AI Transcription
-As soon as your call ends, click "Reveal in Finder" or open your target folder and drag the `.m4a` file straight into open-source local transcription tools like **whisper.cpp**, **MacWhisper**, or **FluidVoice** (or cloud tools like Fireflies and Otter). You get pristine audio quality without locking your data into a proprietary subscription cloud.
+As soon as your call ends, right-click the leaf icon and choose **Open Folder** (Finder opens with your newest recording already selected) and drag the `.m4a` file straight into open-source local transcription tools like **whisper.cpp**, **MacWhisper**, or **FluidVoice** (or cloud tools like Fireflies and Otter). You get pristine audio quality without locking your data into a proprietary subscription cloud.
 
 ---
 

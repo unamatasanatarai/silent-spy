@@ -3,7 +3,7 @@ import SwiftUI
 import Combine
 
 @MainActor
-public final class MenuBarController: NSObject, NSMenuDelegate {
+public final class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
     private var statusItem: NSStatusItem?
     private let manager: RecordingManager
     private var cancellables = Set<AnyCancellable>()
@@ -107,7 +107,13 @@ public final class MenuBarController: NSObject, NSMenuDelegate {
         let showWindowItem = NSMenuItem(title: "Show Window", action: #selector(showMainWindow), keyEquivalent: "w")
         showWindowItem.target = self
         menu.addItem(showWindowItem)
-        
+
+        let openFolderItem = NSMenuItem(title: "Open Folder", action: #selector(openRecordingsFolder), keyEquivalent: "o")
+        openFolderItem.target = self
+        menu.addItem(openFolderItem)
+
+        menu.addItem(NSMenuItem.separator())
+
         let quitItem = NSMenuItem(title: "Quit", action: #selector(menuQuitApp), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
@@ -140,6 +146,10 @@ public final class MenuBarController: NSObject, NSMenuDelegate {
         statusItem?.menu = nil
     }
     
+    @objc private func openRecordingsFolder() {
+        manager.revealLatestInFinder()
+    }
+
     @objc private func menuQuitApp() {
         if manager.isRecording {
             manager.stopRecording()
@@ -171,6 +181,7 @@ public final class MenuBarController: NSObject, NSMenuDelegate {
         window.isMovableByWindowBackground = true
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         window.isReleasedWhenClosed = false
+        window.delegate = self
         
         let contentView = MainWindowView(manager: manager, onClose: { [weak window] in
             window?.orderOut(nil)
@@ -187,6 +198,23 @@ public final class MenuBarController: NSObject, NSMenuDelegate {
         window.makeKeyAndOrderFront(nil)
         window.makeFirstResponder(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+    
+    // MARK: - NSWindowDelegate
+    
+    /// Hide the HUD when the user clicks away from it (another app, the desktop, etc.).
+    public func windowDidResignKey(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow,
+              window === mainWindowController?.window else { return }
+        // Defer one runloop tick so a sheet (e.g. the storage folder picker) has time
+        // to attach; key focus moving into our own sheet must not hide the window.
+        DispatchQueue.main.async { [weak window] in
+            guard let window = window, window.isVisible else { return }
+            if window.isKeyWindow || window.attachedSheet != nil || !window.sheets.isEmpty {
+                return
+            }
+            window.orderOut(nil)
+        }
     }
     
     @objc public func toggleMainWindow() {

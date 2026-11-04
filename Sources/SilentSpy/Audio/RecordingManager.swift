@@ -320,12 +320,49 @@ public final class RecordingManager: ObservableObject, MicrophoneCaptureDelegate
         NSWorkspace.shared.open(storageDirectoryURL)
     }
     
+    /// Opens the storage folder in Finder with the newest recording selected.
+    /// Falls back to just opening the folder when no recording exists yet.
     public func revealLatestInFinder() {
-        guard let url = lastSavedRecordingURL ?? currentRecordingURL else {
+        guard let url = newestRecordingURL() else {
             openStorageFolder()
             return
         }
         NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
+    /// Resolves the newest recording: the in-progress file while recording,
+    /// otherwise the most recently created `.m4a` in the storage folder
+    /// (survives app restarts and folder changes, unlike `lastSavedRecordingURL`).
+    public func newestRecordingURL() -> URL? {
+        let fm = FileManager.default
+        if isRecording, let url = currentRecordingURL, fm.fileExists(atPath: url.path) {
+            return url
+        }
+
+        let keys: [URLResourceKey] = [.creationDateKey, .contentModificationDateKey, .isRegularFileKey]
+        let files = (try? fm.contentsOfDirectory(
+            at: storageDirectoryURL,
+            includingPropertiesForKeys: keys,
+            options: [.skipsHiddenFiles]
+        )) ?? []
+
+        func date(_ url: URL) -> Date {
+            let values = try? url.resourceValues(forKeys: Set(keys))
+            return values?.creationDate ?? values?.contentModificationDate ?? .distantPast
+        }
+
+        let newest = files
+            .filter { $0.pathExtension.lowercased() == "m4a" }
+            .filter { (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true }
+            .max { date($0) < date($1) }
+
+        if let newest = newest {
+            return newest
+        }
+        if let last = lastSavedRecordingURL, fm.fileExists(atPath: last.path) {
+            return last
+        }
+        return nil
     }
     
     public var formattedDuration: String {
