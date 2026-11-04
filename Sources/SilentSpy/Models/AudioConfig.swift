@@ -10,7 +10,7 @@ public struct AudioConfig {
     private static let storageBookmarkKey = "SilentSpy_StorageBookmark"
     private static let storagePathKey = "SilentSpy_StoragePath"
     /// Paths whose security scope has already been opened (open once, not on every access).
-    nonisolated(unsafe) private static var accessedScopedPaths = Set<String>() // guarded by accessLock
+    private static var accessedScopedPaths = Set<String>() // guarded by accessLock
     private static let accessLock = NSLock()
 
     /// Output settings for `AVCaptureAudioDataOutput`: Core Audio converts whatever the device

@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help build run launch revoke clean install dmg release release-dry-run
+.PHONY: help build run launch revoke clean dmg release release-dry-run
 
 ## help: Display this help message
 help:
@@ -34,13 +34,6 @@ clean: revoke
 	@echo "==> Cleaning build artifacts..."
 	@rm -rf build
 	@echo "✅ Clean complete."
-
-## install: Install SilentSpy.app to /Applications
-install: build
-	@echo "==> Installing SilentSpy.app to /Applications..."
-	@rm -rf "/Applications/SilentSpy.app"
-	@cp -R "build/SilentSpy.app" /Applications/
-	@echo "✅ Installed to /Applications/SilentSpy.app"
 
 ## dmg: Create DMG installer package with custom styled background
 dmg: build

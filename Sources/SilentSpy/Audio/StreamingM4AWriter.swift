@@ -180,9 +180,9 @@ public final class StreamingM4AWriter: @unchecked Sendable { // state confined t
         guard let pcm = AVAudioPCMBuffer(pcmFormat: pcmFormat, frameCapacity: AVAudioFrameCount(frames)),
               let channelData = pcm.floatChannelData else { return nil }
         pcm.frameLength = AVAudioFrameCount(frames)
-        mic.withUnsafeBufferPointer { channelData[0].update(from: $0.baseAddress!, count: frames) }
+        mic.withUnsafeBufferPointer { channelData[0].initialize(from: $0.baseAddress!, count: frames) }
         if channels > 1 {
-            system.withUnsafeBufferPointer { channelData[1].update(from: $0.baseAddress!, count: frames) }
+            system.withUnsafeBufferPointer { channelData[1].initialize(from: $0.baseAddress!, count: frames) }
         }
 
         var timing = CMSampleTimingInfo(
