@@ -35,8 +35,8 @@ clean: revoke
 	@rm -rf build
 	@echo "✅ Clean complete."
 
-## dmg: Create DMG installer package with custom styled background
-dmg: build
+## dmg: Create DMG installer package with custom styled background (always a fresh build)
+dmg:
 	@./scripts/build_dmg.sh
 
 ## release-dry-run: Preview release tagging and publishing without making remote changes

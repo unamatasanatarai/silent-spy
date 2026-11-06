@@ -9,10 +9,15 @@ fi
 
 echo "==> Creating ${APP_NAME} v${VERSION} DMG installer..."
 
-# 1. Ensure SilentSpy.app is built
-if [ ! -d "build/${APP_NAME}.app" ]; then
-    echo "==> Building ${APP_NAME}.app first..."
-    ./build.sh
+# 1. Always do a full, fresh build for distribution: an incrementally reused bundle could carry a
+#    stale version, stale resources or an invalidated signature.
+echo "==> Building ${APP_NAME}.app from scratch (FORCE=1)..."
+FORCE=1 ./build.sh
+codesign --verify --strict "build/${APP_NAME}.app"
+BUILT_VERSION=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "build/${APP_NAME}.app/Contents/Info.plist")
+if [ "${BUILT_VERSION}" != "${VERSION}" ]; then
+    echo "❌ Bundle version ${BUILT_VERSION} does not match VERSION ${VERSION}."
+    exit 1
 fi
 
 # 2. Generate high-resolution Retina background

@@ -10,6 +10,10 @@ import CoreMedia
 ///
 /// All writer state is confined to `writeQueue`. The first failure (disk full, volume gone…) is
 /// reported once via `onWriteError`, and further writes are skipped.
+///
+/// Back-pressure: when the encoder is momentarily not ready (slow disk, I/O burst, busy CPU), encoded
+/// input is held in a bounded backlog and retried — never appended while not ready, and a transient
+/// stall never ends the recording. Only a backlog overflow (`maxBacklogSeconds`) is treated as fatal.
 public final class StreamingM4AWriter: @unchecked Sendable { // state confined to writeQueue / statsLock
     public let fileURL: URL
     public let sampleRate: Double
@@ -17,6 +21,9 @@ public final class StreamingM4AWriter: @unchecked Sendable { // state confined t
 
     /// Maximum audio lost on a crash.
     public static let fragmentInterval: Double = 3.0
+
+    /// Audio held while the encoder is not ready before the stall is treated as a failure.
+    public static let maxBacklogSeconds: Double = 30.0
 
     /// Called once, on the write queue, when encoding/writing fails.
     public var onWriteError: ((OSStatus) -> Void)?
@@ -27,8 +34,15 @@ public final class StreamingM4AWriter: @unchecked Sendable { // state confined t
     private let assetWriter: AVAssetWriter
     private let input: AVAssetWriterInput
     private let pcmFormat: AVAudioFormat
+    /// Frames handed to the encoder.
     private var framesAppended: Int64 = 0
-    private var hasFailed = false
+    /// Frames turned into sample buffers (appended + backlog); next buffer's timestamp.
+    private var framesQueued: Int64 = 0
+    private var backlog: [(buffer: CMSampleBuffer, frames: Int64)] = []
+    private var backlogFrames: Int64 = 0
+    private var retryScheduled = false
+    private var failureStatus: OSStatus?
+    private var hasFailed: Bool { failureStatus != nil }
     private var isFinished = false
 
     // Read from the main thread for UI, written on writeQueue
@@ -88,7 +102,7 @@ public final class StreamingM4AWriter: @unchecked Sendable { // state confined t
         self.input = input
     }
 
-    /// Queues dual-channel frames (Left = Mic, Right = System Audio) for encoding.
+    /// Queues dual-channel frames (Left = Mic, Right = System Audio) for encoding. Never blocks.
     public func write(micSamples: [Float], systemSamples: [Float]) {
         writeQueue.async { [self] in
             guard !hasFailed, !isFinished else { return }
@@ -100,23 +114,17 @@ public final class StreamingM4AWriter: @unchecked Sendable { // state confined t
                 fail(-1)
                 return
             }
+            backlog.append((sampleBuffer, Int64(frameCount)))
+            backlogFrames += Int64(frameCount)
+            framesQueued += Int64(frameCount)
 
-            // Real-time input: wait briefly for the encoder if it's momentarily busy.
-            var waited = 0
-            while !input.isReadyForMoreMediaData && assetWriter.status == .writing && waited < 2000 {
-                usleep(1000)
-                waited += 1
-            }
-
-            guard assetWriter.status == .writing, input.append(sampleBuffer) else {
-                fail(Self.status(of: assetWriter.error))
+            drainBacklog()
+            guard !hasFailed else { return }
+            if Double(backlogFrames) / sampleRate > Self.maxBacklogSeconds {
+                fail(Self.encoderStalledStatus)
                 return
             }
-
-            framesAppended += Int64(frameCount)
-            statsLock.lock()
-            _totalFramesWritten = framesAppended
-            statsLock.unlock()
+            scheduleRetryIfNeeded()
         }
     }
 
@@ -124,7 +132,7 @@ public final class StreamingM4AWriter: @unchecked Sendable { // state confined t
     public func finish(completion: ((OSStatus) -> Void)? = nil) {
         writeQueue.async { [self] in
             guard !isFinished else {
-                completion?(hasFailed ? -1 : noErr)
+                completion?(failureStatus ?? noErr)
                 return
             }
             isFinished = true
@@ -134,6 +142,19 @@ public final class StreamingM4AWriter: @unchecked Sendable { // state confined t
                 return
             }
 
+            // Drain whatever the encoder hasn't accepted yet (bounded wait: never hang shutdown).
+            var waited = 0
+            while !backlog.isEmpty && !hasFailed && assetWriter.status == .writing && waited < 10_000 {
+                drainBacklog()
+                if !backlog.isEmpty {
+                    usleep(1000)
+                    waited += 1
+                }
+            }
+            let droppedTail = !backlog.isEmpty
+            backlog.removeAll()
+            backlogFrames = 0
+
             input.markAsFinished()
             // Nothing written at all: still produce a valid (empty) file.
             assetWriter.endSession(atSourceTime: CMTime(value: framesAppended, timescale: CMTimeScale(sampleRate)))
@@ -142,10 +163,12 @@ public final class StreamingM4AWriter: @unchecked Sendable { // state confined t
             assetWriter.finishWriting { done.signal() }
             done.wait()
 
-            if assetWriter.status == .completed && !hasFailed {
-                completion?(noErr)
+            if let failure = failureStatus {
+                completion?(failure)
+            } else if assetWriter.status != .completed {
+                completion?(Self.status(of: assetWriter.error))
             } else {
-                completion?(hasFailed ? -1 : Self.status(of: assetWriter.error))
+                completion?(droppedTail ? Self.encoderStalledStatus : noErr)
             }
         }
     }
@@ -172,8 +195,43 @@ public final class StreamingM4AWriter: @unchecked Sendable { // state confined t
 
     private func fail(_ status: OSStatus) {
         guard !hasFailed else { return }
-        hasFailed = true
+        failureStatus = status
+        backlog.removeAll()
+        backlogFrames = 0
         onWriteError?(status)
+    }
+
+    /// Appends backlog buffers, in order, while the encoder accepts them.
+    private func drainBacklog() {
+        while !backlog.isEmpty && !hasFailed {
+            guard assetWriter.status == .writing else {
+                fail(Self.status(of: assetWriter.error))
+                return
+            }
+            guard input.isReadyForMoreMediaData else { return }
+            let (buffer, frames) = backlog.removeFirst()
+            backlogFrames -= frames
+            guard input.append(buffer) else {
+                fail(Self.status(of: assetWriter.error))
+                return
+            }
+            framesAppended += frames
+            statsLock.lock()
+            _totalFramesWritten = framesAppended
+            statsLock.unlock()
+        }
+    }
+
+    /// While a backlog exists and no new audio arrives to trigger a drain, poll the encoder.
+    private func scheduleRetryIfNeeded() {
+        guard !backlog.isEmpty, !retryScheduled, !hasFailed, !isFinished else { return }
+        retryScheduled = true
+        writeQueue.asyncAfter(deadline: .now() + .milliseconds(10)) { [self] in
+            retryScheduled = false
+            guard !isFinished else { return }
+            drainBacklog()
+            scheduleRetryIfNeeded()
+        }
     }
 
     private func makeSampleBuffer(mic: [Float], system: [Float], frames: Int) -> CMSampleBuffer? {
@@ -187,7 +245,7 @@ public final class StreamingM4AWriter: @unchecked Sendable { // state confined t
 
         var timing = CMSampleTimingInfo(
             duration: CMTime(value: 1, timescale: CMTimeScale(sampleRate)),
-            presentationTimeStamp: CMTime(value: framesAppended, timescale: CMTimeScale(sampleRate)),
+            presentationTimeStamp: CMTime(value: framesQueued, timescale: CMTimeScale(sampleRate)),
             decodeTimeStamp: .invalid
         )
         var sampleBuffer: CMSampleBuffer?
@@ -216,6 +274,9 @@ public final class StreamingM4AWriter: @unchecked Sendable { // state confined t
         )
         return status == noErr ? buffer : nil
     }
+
+    /// Status reported via `onWriteError` when the encoder backlog overflows `maxBacklogSeconds`.
+    public static let encoderStalledStatus: OSStatus = 0x53_53_53_54 // 'SSST'
 
     private static func status(of error: Error?) -> OSStatus {
         guard let nsError = error as NSError? else { return -1 }

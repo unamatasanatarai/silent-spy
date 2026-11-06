@@ -50,15 +50,9 @@ public final class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate
     }
     
     private func loadStatusIcon(named name: String) -> NSImage? {
-        var image: NSImage?
-        if let bundleUrl = Bundle.main.url(forResource: name, withExtension: "png"),
-           let img = NSImage(contentsOf: bundleUrl) {
-            image = img
-        } else if let img = NSImage(contentsOfFile: "Resources/\(name).png") {
-            image = img
-        }
-        
-        guard let img = image else { return nil }
+        // Bundle only: never load images from a path relative to the current working directory.
+        guard let bundleUrl = Bundle.main.url(forResource: name, withExtension: "png"),
+              let img = NSImage(contentsOf: bundleUrl) else { return nil }
         
         // Status bar icon sizing (18pt height, maintaining aspect ratio)
         let targetHeight: CGFloat = 18.0

@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import AppKit
+import CoreMedia
 
 /// Thread-safe hand-off point between the capture queues and the recording pipeline.
 ///
@@ -88,6 +89,13 @@ public final class RecordingManager: ObservableObject, MicrophoneCaptureDelegate
     private var synchronizer: AudioStreamSynchronizer?
     private var finalizationWaiters: [() -> Void] = []
 
+    /// Storage checks touch the file system (possibly a slow or network volume): never on main.
+    private let storageCheckQueue = DispatchQueue(label: "com.silentspy.storagecheck", qos: .userInitiated)
+    private var storageCheckGeneration = 0
+    private var isStartingRecording = false
+    /// Set when the current recording is being stopped because its writer failed.
+    private var writeFailureActive = false
+
     private static let meterRefreshRate: Double = 30
     private var timer: Timer?
     private var timerTicks = 0
@@ -114,6 +122,8 @@ public final class RecordingManager: ObservableObject, MicrophoneCaptureDelegate
         }
     }
 
+    /// Refreshes permission state. Mic/screen checks are cheap and synchronous; the storage check runs
+    /// off the main thread and is side-effect free (it never creates the folder or writes to it).
     public func checkPermissions() {
         self.hasMicPermission = MicrophoneCaptureManager.checkPermission()
         if #available(macOS 12.3, *) {
@@ -121,9 +131,29 @@ public final class RecordingManager: ObservableObject, MicrophoneCaptureDelegate
         } else {
             self.hasScreenPermission = false
         }
-        self.hasStoragePermission = AudioConfig.checkStoragePermission()
-        self.storageDirectoryURL = AudioConfig.storageDirectory
+        let directory = AudioConfig.storageDirectory
+        self.storageDirectoryURL = directory
         updateCaptureEngines()
+        verifyStorage(directory, thorough: false) { _ in }
+    }
+
+    /// Checks `directory` on `storageCheckQueue` and publishes the result on main. Results of checks
+    /// superseded by a newer one are ignored. `thorough` creates the folder and writes a probe file.
+    private func verifyStorage(_ directory: URL, thorough: Bool, completion: @escaping (Bool) -> Void) {
+        storageCheckGeneration += 1
+        let generation = storageCheckGeneration
+        storageCheckQueue.async {
+            let ok = thorough
+                ? AudioConfig.checkStoragePermission(for: directory)
+                : AudioConfig.quickStoragePermissionCheck(for: directory)
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                if generation == self.storageCheckGeneration {
+                    self.hasStoragePermission = ok
+                }
+                completion(ok)
+            }
+        }
     }
 
     public func restartApp() {
@@ -181,36 +211,54 @@ public final class RecordingManager: ObservableObject, MicrophoneCaptureDelegate
             guard let self = self else { return }
             if let selectedURL = selectedURL {
                 self.storageDirectoryURL = selectedURL
-                self.hasStoragePermission = AudioConfig.checkStoragePermission(for: selectedURL)
                 self.statusMessage = "Storage folder set to: \(selectedURL.lastPathComponent)"
-                completion?(self.hasStoragePermission)
+                self.verifyStorage(selectedURL, thorough: true) { ok in
+                    completion?(ok)
+                }
             } else {
                 self.checkPermissions()
-                completion?(self.hasStoragePermission)
+                self.verifyStorage(AudioConfig.storageDirectory, thorough: false) { ok in
+                    completion?(ok)
+                }
             }
         }
     }
 
     public func startRecording() {
-        guard !isRecording else { return }
+        guard !isRecording, !isStartingRecording else { return }
         errorMessage = nil
+        isStartingRecording = true
 
         checkPermissions()
 
-        // Ensure storage folder permission
-        guard hasStoragePermission else {
-            self.statusMessage = "Please select and authorize a storage folder."
-            requestStoragePermission { [weak self] granted in
-                if granted {
-                    self?.startRecording()
-                } else {
-                    self?.errorMessage = "Cannot record without a writable storage folder."
+        // Ensure the storage folder exists and is writable (disk I/O: off the main thread).
+        let directory = AudioConfig.storageDirectory
+        verifyStorage(directory, thorough: true) { [weak self] writable in
+            guard let self = self else { return }
+            guard writable else {
+                self.isStartingRecording = false
+                self.statusMessage = "Please select and authorize a storage folder."
+                self.requestStoragePermission { [weak self] granted in
+                    if granted {
+                        self?.startRecording()
+                    } else {
+                        self?.errorMessage = "Cannot record without a writable storage folder."
+                    }
                 }
+                return
             }
-            return
+            self.beginRecording()
         }
+    }
+
+    private func beginRecording() {
+        defer { isStartingRecording = false }
+        guard !isRecording else { return }
 
         let recordingURL = AudioConfig.generateRecordingURL()
+        // Frame 0 of BOTH channels is "now" on the host clock that capture timestamps use, so a
+        // stream that starts delivering later is placed at its true offset (not shifted to frame 0).
+        let epoch = CMClockGetTime(CMClockGetHostTimeClock())
 
         do {
             let writer = try StreamingM4AWriter(
@@ -224,7 +272,7 @@ public final class RecordingManager: ObservableObject, MicrophoneCaptureDelegate
                     self.handleWriteFailure(of: writer, status: status)
                 }
             }
-            let sync = AudioStreamSynchronizer(writer: writer)
+            let sync = AudioStreamSynchronizer(writer: writer, epoch: epoch)
 
             self.currentRecordingURL = recordingURL
             self.m4aWriter = writer
@@ -256,6 +304,8 @@ public final class RecordingManager: ObservableObject, MicrophoneCaptureDelegate
 
         stopTimer()
         let savedURL = currentRecordingURL
+        let hadWriteFailure = writeFailureActive
+        writeFailureActive = false
         let folderName = storageDirectoryURL.lastPathComponent
         statusMessage = "Finalizing M4A file..."
 
@@ -281,6 +331,10 @@ public final class RecordingManager: ObservableObject, MicrophoneCaptureDelegate
                 if !self.isRecording {
                     self.statusMessage = "Recording saved to \(folderName)!"
                 }
+            } else if hadWriteFailure {
+                // handleWriteFailure already explained what went wrong; keep that message.
+            } else if status == StreamingM4AWriter.encoderStalledStatus {
+                self.errorMessage = "Recording \(savedURL?.lastPathComponent ?? "") may be missing its last seconds (disk too slow to finish writing)."
             } else {
                 self.errorMessage = "Recording \(savedURL?.lastPathComponent ?? "") may be incomplete (OSStatus \(status))."
             }
@@ -313,7 +367,12 @@ public final class RecordingManager: ObservableObject, MicrophoneCaptureDelegate
 
     private func handleWriteFailure(of writer: StreamingM4AWriter, status: OSStatus) {
         guard writer === m4aWriter, isRecording else { return }
-        errorMessage = "Writing to disk failed (OSStatus \(status)) — recording stopped. Check free space and the storage folder."
+        writeFailureActive = true
+        if status == StreamingM4AWriter.encoderStalledStatus {
+            errorMessage = "Disk too slow: audio encoder stalled for \(Int(StreamingM4AWriter.maxBacklogSeconds)) s — recording stopped."
+        } else {
+            errorMessage = "Writing to disk failed (OSStatus \(status)) — recording stopped. Check free space and the storage folder."
+        }
         stopRecording()
     }
 

@@ -4,7 +4,7 @@ import PackageDescription
 let package = Package(
     name: "SilentSpy",
     platforms: [
-        .macOS(.v12)
+        .macOS("12.3")
     ],
     targets: [
         .executableTarget(
