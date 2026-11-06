@@ -127,7 +127,7 @@ export NOTARY_PROFILE=silentspy-notary
 make release
 ```
 
-`make release` refuses to publish an un-notarized build unless `ALLOW_UNNOTARIZED=1` is set.
+Without these, `make release` publishes an ad-hoc signed, un-notarized build.
 
 ---
 

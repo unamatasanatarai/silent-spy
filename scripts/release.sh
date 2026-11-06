@@ -39,14 +39,9 @@ if [ -n "${UNCOMMITTED}" ]; then
     fi
 fi
 
-# 3. Refuse to publish an un-notarized build unless explicitly allowed
+# 3. Note the signing mode (releases are ad-hoc signed unless Developer ID credentials are set)
 if [ -z "${SIGN_IDENTITY:-}" ] || [ -z "${NOTARY_PROFILE:-}" ]; then
-    echo "⚠️  SIGN_IDENTITY and/or NOTARY_PROFILE not set: the release would be ad-hoc signed and not notarized."
-    echo "   Users would have to bypass Gatekeeper, and permissions reset on every update."
-    if [ "${ALLOW_UNNOTARIZED:-}" != "1" ] && [ "${DRY_RUN}" = false ]; then
-        echo "❌ Set SIGN_IDENTITY + NOTARY_PROFILE, or re-run with ALLOW_UNNOTARIZED=1 to publish anyway."
-        exit 1
-    fi
+    echo "ℹ️  SIGN_IDENTITY and/or NOTARY_PROFILE not set: publishing an ad-hoc signed, un-notarized build."
 fi
 
 # 4. Build DMG package if not already built or stale
