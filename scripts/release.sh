@@ -46,12 +46,7 @@ fi
 
 # 4. Build DMG package if not already built or stale
 echo "📦 Step 1: Building distribution DMG..."
-if [ "${DRY_RUN}" = true ]; then
-    echo "==> Running 'make dmg' to verify build artifacts..."
-    make dmg
-else
-    make dmg
-fi
+make dmg
 
 if [ ! -f "${DMG_FILE}" ]; then
     echo "❌ Error: Build artifact ${DMG_FILE} was not found."
